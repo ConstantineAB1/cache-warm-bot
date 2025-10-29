@@ -2,7 +2,7 @@ name: Fetch full sitemap
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:
