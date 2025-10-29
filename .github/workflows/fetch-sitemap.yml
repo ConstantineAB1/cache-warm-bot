@@ -1,12 +1,12 @@
-name: Fetch sitemap
+name: Fetch full sitemap
 
 on:
   schedule:
-    - cron: '0 * * * *'  # раз в час
-  workflow_dispatch:  # можно запускать вручную из вкладки Actions
+    - cron: '0 * * * *'  # запускается каждый час
+  workflow_dispatch:
 
 permissions:
-  contents: write   # 👈 обязательно! иначе не сможет сделать commit/push
+  contents: write
 
 jobs:
   fetch:
@@ -14,14 +14,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download sitemap
-        run: |
-          curl -L https://salomon.community/sitemap.xml -o sitemap.xml
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet
 
-      - name: Commit & push sitemap
+      - name: Download and expand sitemap
         run: |
-          git config user.name "CacheBot"
-          git config user.email "bot@example.com"
-          git add sitemap.xml
-          git commit -m "update sitemap $(date -u +'%Y-%m-%dT%H:%M:%SZ')" || echo "No changes"
+          BASE_URL="https://salomon.community"
+          MAIN_SITEMAP="$BASE_URL/sitemap.xml"
+          OUTPUT="sitemap_full.txt"
+
+          echo "🛰 Downloading main sitemap: $MAIN_SITEMAP"
+          curl -sL "$MAIN_SITEMAP" -o main.xml
+
+          echo "🔍 Extracting nested sitemaps..."
+          xmlstarlet sel -t -v "//sitemap/loc" -n main.xml > sitemaps.txt
+
+          echo "🌐 Fetching all nested sitemaps..."
+          > "$OUTPUT"
+          while read -r SITEMAP_URL; do
+            echo "Processing: $SITEMAP_URL"
+            curl -sL "$SITEMAP_URL" -o tmp.xml
+            xmlstarlet sel -t -v "//url/loc" -n tmp.xml >> "$OUTPUT"
+          done < sitemaps.txt
+
+          echo "✅ Collected $(wc -l < "$OUTPUT") URLs into $OUTPUT"
+
+      - name: Commit & push
+        run: |
+          git config user.name "Sitemap Updater"
+          git config user.email "actions@github.com"
+          git add sitemap_full.txt
+          git commit -m "update full sitemap $(date -u +'%Y-%m-%dT%H:%M:%SZ')" || echo "No changes"
           git push
