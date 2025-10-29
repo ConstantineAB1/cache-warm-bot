@@ -2,7 +2,7 @@ name: Fetch full sitemap
 
 on:
   schedule:
-    - cron: '0 * * * *'  # запускается каждый час
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -15,27 +15,50 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet
+        run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet gzip
 
       - name: Download and expand sitemap
         run: |
+          set -e
           BASE_URL="https://salomon.community"
-          MAIN_SITEMAP="$BASE_URL/sitemap.xml"
           OUTPUT="sitemap_full.txt"
+          > "$OUTPUT"
 
-          echo "🛰 Downloading main sitemap: $MAIN_SITEMAP"
+          # Возможные пути
+          for PATH in "/sitemap_index.xml" "/wp-sitemap.xml" "/sitemap.xml"; do
+            URL="$BASE_URL$PATH"
+            echo "🛰 Trying $URL"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Found sitemap: $URL"
+              MAIN_SITEMAP="$URL"
+              break
+            fi
+          done
+
+          if [ -z "$MAIN_SITEMAP" ]; then
+            echo "❌ No sitemap found on $BASE_URL"
+            exit 1
+          fi
+
+          # Скачиваем основной сайтмап
           curl -sL "$MAIN_SITEMAP" -o main.xml
 
           echo "🔍 Extracting nested sitemaps..."
-          xmlstarlet sel -t -v "//sitemap/loc" -n main.xml > sitemaps.txt
+          xmlstarlet sel -N sm="*" -t -v "//sm:sitemap/sm:loc" -n main.xml > sitemaps.txt || true
 
-          echo "🌐 Fetching all nested sitemaps..."
-          > "$OUTPUT"
-          while read -r SITEMAP_URL; do
-            echo "Processing: $SITEMAP_URL"
-            curl -sL "$SITEMAP_URL" -o tmp.xml
-            xmlstarlet sel -t -v "//url/loc" -n tmp.xml >> "$OUTPUT"
-          done < sitemaps.txt
+          if [ ! -s sitemaps.txt ]; then
+            echo "⚠️ No nested sitemaps found — trying direct URLs"
+            xmlstarlet sel -N sm="*" -t -v "//sm:url/sm:loc" -n main.xml >> "$OUTPUT" || true
+          else
+            echo "🌐 Fetching nested sitemaps..."
+            while read -r SITEMAP_URL; do
+              [ -z "$SITEMAP_URL" ] && continue
+              echo "Processing: $SITEMAP_URL"
+              curl -sL "$SITEMAP_URL" -o tmp.xml
+              xmlstarlet sel -N sm="*" -t -v "//sm:url/sm:loc" -n tmp.xml >> "$OUTPUT" || true
+            done < sitemaps.txt
+          fi
 
           echo "✅ Collected $(wc -l < "$OUTPUT") URLs into $OUTPUT"
 
