@@ -1,8 +1,8 @@
-name: Fetch full sitemap
+name: Fetch full sitemap (Python)
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 * * * *'   # раз в час
   workflow_dispatch:
 
 permissions:
@@ -12,60 +12,116 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet gzip
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-      - name: Download and expand sitemap
+      - name: Install Python deps
+        run: python -m pip install --upgrade pip && python -m pip install requests
+
+      - name: Download & expand sitemap into sitemap_full.txt
+        env:
+          MAIN_SITEMAP: "https://salomon.community/sitemap.xml"  # <- если поменяется, замени здесь
+          OUTPUT_FILE: "sitemap_full.txt"
         run: |
-          set -e
-          BASE_URL="https://salomon.community"
-          OUTPUT="sitemap_full.txt"
-          > "$OUTPUT"
+          python - <<'PY'
+          import requests, sys, xml.etree.ElementTree as ET, html
+          from urllib.parse import urljoin
+          import os
 
-          # Возможные пути
-          for PATH in "/sitemap_index.xml" "/wp-sitemap.xml" "/sitemap.xml"; do
-            URL="$BASE_URL$PATH"
-            echo "🛰 Trying $URL"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ Found sitemap: $URL"
-              MAIN_SITEMAP="$URL"
-              break
-            fi
-          done
+          MAIN = os.environ.get("MAIN_SITEMAP")
+          OUT = os.environ.get("OUTPUT_FILE", "sitemap_full.txt")
 
-          if [ -z "$MAIN_SITEMAP" ]; then
-            echo "❌ No sitemap found on $BASE_URL"
-            exit 1
-          fi
+          headers = {"User-Agent": "CacheWarmerBot/1.0 (+https://salomon.community)"}
 
-          # Скачиваем основной сайтмап
-          curl -sL "$MAIN_SITEMAP" -o main.xml
+          def fetch(url):
+              try:
+                  r = requests.get(url, headers=headers, timeout=30)
+                  r.raise_for_status()
+                  return r.content
+              except Exception as e:
+                  print("ERROR fetching", url, e)
+                  return None
 
-          echo "🔍 Extracting nested sitemaps..."
-          xmlstarlet sel -N sm="*" -t -v "//sm:sitemap/sm:loc" -n main.xml > sitemaps.txt || true
+          def extract_locs_from_xml_bytes(bts):
+              """Return list of <loc> values (handles namespace and CDATA)."""
+              locs = []
+              try:
+                  root = ET.fromstring(bts)
+              except Exception as e:
+                  print("XML parse error:", e)
+                  return locs
+              # find all loc elements regardless of namespace
+              for el in root.findall('.//{*}loc'):
+                  if el is not None and el.text:
+                      locs.append(el.text.strip())
+              return locs
 
-          if [ ! -s sitemaps.txt ]; then
-            echo "⚠️ No nested sitemaps found — trying direct URLs"
-            xmlstarlet sel -N sm="*" -t -v "//sm:url/sm:loc" -n main.xml >> "$OUTPUT" || true
-          else
-            echo "🌐 Fetching nested sitemaps..."
-            while read -r SITEMAP_URL; do
-              [ -z "$SITEMAP_URL" ] && continue
-              echo "Processing: $SITEMAP_URL"
-              curl -sL "$SITEMAP_URL" -o tmp.xml
-              xmlstarlet sel -N sm="*" -t -v "//sm:url/sm:loc" -n tmp.xml >> "$OUTPUT" || true
-            done < sitemaps.txt
-          fi
+          print("Fetching main sitemap:", MAIN)
+          content = fetch(MAIN)
+          if not content:
+              print("Failed to fetch main sitemap. Exiting.")
+              sys.exit(1)
 
-          echo "✅ Collected $(wc -l < "$OUTPUT") URLs into $OUTPUT"
+          # First check if main sitemap contains <sitemap> entries
+          nested = []
+          try:
+              root = ET.fromstring(content)
+              nested = [el.text.strip() for el in root.findall('.//{*}sitemap/{*}loc') if el.text and el.text.strip()]
+          except Exception as e:
+              print("Error parsing main sitemap for nested sitemap entries:", e)
 
-      - name: Commit & push
+          all_urls = []
+
+          if nested:
+              print(f"Found {len(nested)} nested sitemap(s).")
+              for sm in nested:
+                  print("Processing nested sitemap:", sm)
+                  b = fetch(sm)
+                  if not b:
+                      print("  skipped (fetch failed):", sm)
+                      continue
+                  locs = extract_locs_from_xml_bytes(b)
+                  print(f"  got {len(locs)} locs")
+                  all_urls.extend(locs)
+          else:
+              # If no nested sitemaps were found, try to extract <url><loc> from main directly
+              print("No nested sitemaps found — extracting <url><loc> from main sitemap")
+              locs = extract_locs_from_xml_bytes(content)
+              print(f"  got {len(locs)} locs")
+              all_urls.extend(locs)
+
+          # normalize and dedupe
+          normalized = []
+          seen = set()
+          for u in all_urls:
+              if not u:
+                  continue
+              u = u.strip()
+              if u not in seen:
+                  normalized.append(u)
+                  seen.add(u)
+
+          print(f"Total unique urls collected: {len(normalized)}")
+
+          with open(OUT, "w", encoding="utf-8") as f:
+              for u in normalized:
+                  f.write(u + "\n")
+
+          if len(normalized) == 0:
+              print("WARNING: sitemap_full.txt is empty")
+          else:
+              print("Wrote", OUT)
+          PY
+
+      - name: Commit & push sitemap_full.txt
         run: |
           git config user.name "Sitemap Updater"
           git config user.email "actions@github.com"
-          git add sitemap_full.txt
-          git commit -m "update full sitemap $(date -u +'%Y-%m-%dT%H:%M:%SZ')" || echo "No changes"
+          git add sitemap_full.txt || true
+          git commit -m "update full sitemap $(date -u +'%Y-%m-%dT%H:%M:%SZ')" || echo "No changes to commit"
           git push
