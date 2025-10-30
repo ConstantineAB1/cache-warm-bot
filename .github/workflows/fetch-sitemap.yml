@@ -2,7 +2,7 @@ name: Fetch full sitemap (Python)
 
 on:
   schedule:
-    - cron: '0 * * * *'   # раз в час
+    - cron: '0 0 * * *'   # раз в час
   workflow_dispatch:
 
 permissions:
