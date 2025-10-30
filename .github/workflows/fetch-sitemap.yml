@@ -29,14 +29,11 @@ jobs:
           OUTPUT_FILE: "sitemap_full.txt"
         run: |
           python - <<'PY'
-          import requests, sys, xml.etree.ElementTree as ET, html
-          from urllib.parse import urljoin
-          import os
+          import requests, sys, xml.etree.ElementTree as ET, os, re
 
           MAIN = os.environ.get("MAIN_SITEMAP")
           OUT = os.environ.get("OUTPUT_FILE", "sitemap_full.txt")
-
-          headers = {"User-Agent": "CacheWarmerBot/1.0 (+https://salomon.community)"}
+          headers = {"User-Agent": "CacheWarmerBot/1.1 (+https://salomon.community)"}
 
           def fetch(url):
               try:
@@ -47,75 +44,67 @@ jobs:
                   print("ERROR fetching", url, e)
                   return None
 
-          def extract_locs_from_xml_bytes(bts):
-              """Return list of <loc> values (handles namespace and CDATA)."""
-              locs = []
+          def extract_locs(bts):
+              """Извлекает все <loc> из XML (учитывая namespace)."""
+              urls = []
               try:
                   root = ET.fromstring(bts)
+                  for el in root.findall('.//{*}loc'):
+                      if el.text:
+                          urls.append(el.text.strip())
               except Exception as e:
                   print("XML parse error:", e)
-                  return locs
-              # find all loc elements regardless of namespace
-              for el in root.findall('.//{*}loc'):
-                  if el is not None and el.text:
-                      locs.append(el.text.strip())
-              return locs
+              return urls
 
-          print("Fetching main sitemap:", MAIN)
+          def is_valid_page(url):
+              """Оставляем только HTML-страницы, исключая медиа и фиды."""
+              url_lower = url.lower()
+              # Исключаем медиа-файлы и служебные URL
+              if re.search(r'\.(jpg|jpeg|png|gif|webp|svg|avif|pdf|mp4|webm|xml|xsl)$', url_lower):
+                  return False
+              if any(x in url_lower for x in ['feed', 'wp-json', '?', '#']):
+                  return False
+              return True
+
+          print("🛰 Fetching main sitemap:", MAIN)
           content = fetch(MAIN)
           if not content:
-              print("Failed to fetch main sitemap. Exiting.")
+              print("Failed to fetch main sitemap.")
               sys.exit(1)
 
-          # First check if main sitemap contains <sitemap> entries
-          nested = []
           try:
               root = ET.fromstring(content)
-              nested = [el.text.strip() for el in root.findall('.//{*}sitemap/{*}loc') if el.text and el.text.strip()]
+              nested = [el.text.strip() for el in root.findall('.//{*}sitemap/{*}loc') if el.text]
           except Exception as e:
-              print("Error parsing main sitemap for nested sitemap entries:", e)
+              print("Parse error:", e)
+              nested = []
 
           all_urls = []
 
           if nested:
-              print(f"Found {len(nested)} nested sitemap(s).")
+              print(f"🔍 Found {len(nested)} nested sitemap(s).")
               for sm in nested:
-                  print("Processing nested sitemap:", sm)
+                  print("  →", sm)
                   b = fetch(sm)
                   if not b:
-                      print("  skipped (fetch failed):", sm)
                       continue
-                  locs = extract_locs_from_xml_bytes(b)
-                  print(f"  got {len(locs)} locs")
+                  locs = extract_locs(b)
                   all_urls.extend(locs)
           else:
-              # If no nested sitemaps were found, try to extract <url><loc> from main directly
-              print("No nested sitemaps found — extracting <url><loc> from main sitemap")
-              locs = extract_locs_from_xml_bytes(content)
-              print(f"  got {len(locs)} locs")
+              locs = extract_locs(content)
               all_urls.extend(locs)
 
-          # normalize and dedupe
-          normalized = []
-          seen = set()
-          for u in all_urls:
-              if not u:
-                  continue
-              u = u.strip()
-              if u not in seen:
-                  normalized.append(u)
-                  seen.add(u)
+          # фильтрация
+          filtered = [u for u in all_urls if is_valid_page(u)]
+          filtered = sorted(set(filtered))
 
-          print(f"Total unique urls collected: {len(normalized)}")
+          print(f"✅ Total pages after filtering: {len(filtered)}")
 
           with open(OUT, "w", encoding="utf-8") as f:
-              for u in normalized:
+              for u in filtered:
                   f.write(u + "\n")
 
-          if len(normalized) == 0:
-              print("WARNING: sitemap_full.txt is empty")
-          else:
-              print("Wrote", OUT)
+          print("📝 Saved to", OUT)
           PY
 
       - name: Commit & push sitemap_full.txt
