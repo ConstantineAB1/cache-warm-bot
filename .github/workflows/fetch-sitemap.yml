@@ -20,7 +20,7 @@ jobs:
       - name: Warm cache from sitemap
         env:
           MAIN_SITEMAP: "https://salomon.community/sitemap.xml"  # при необходимости замени
-          DELAY: "2"  # пауза между запросами (сек.)
+          DELAY: "0"  # пауза между запросами (сек.)
         run: |
           python - <<'PY'
           import requests, time, xml.etree.ElementTree as ET, re, os
