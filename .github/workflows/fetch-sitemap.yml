@@ -27,7 +27,11 @@ jobs:
 
           MAIN = os.environ.get("MAIN_SITEMAP")
           DELAY = float(os.environ.get("DELAY", "2"))
-          headers = {"User-Agent": "CacheWarmerBot/2.0 (+https://salomon.community)"}
+          headers = {"User-Agent": 
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/138.0.0.0 Safari/537.36"
+          }
 
           def fetch(url):
               try:
