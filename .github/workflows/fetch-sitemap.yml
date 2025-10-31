@@ -1,20 +1,14 @@
-name: Fetch full sitemap (Python)
+name: Warm cache from sitemap (Python)
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # раз в час
+    - cron: '0 * * * *'   # запуск раз в час
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  fetch:
+  warm:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -23,17 +17,17 @@ jobs:
       - name: Install Python deps
         run: python -m pip install --upgrade pip && python -m pip install requests
 
-      - name: Download & expand sitemap into sitemap_full.txt
+      - name: Warm cache from sitemap
         env:
-          MAIN_SITEMAP: "https://salomon.community/sitemap.xml"  # <- если поменяется, замени здесь
-          OUTPUT_FILE: "sitemap_full.txt"
+          MAIN_SITEMAP: "https://salomon.community/sitemap.xml"  # при необходимости замени
+          DELAY: "2"  # пауза между запросами (сек.)
         run: |
           python - <<'PY'
-          import requests, sys, xml.etree.ElementTree as ET, os, re
+          import requests, time, xml.etree.ElementTree as ET, re, os
 
           MAIN = os.environ.get("MAIN_SITEMAP")
-          OUT = os.environ.get("OUTPUT_FILE", "sitemap_full.txt")
-          headers = {"User-Agent": "CacheWarmerBot/1.1 (+https://salomon.community)"}
+          DELAY = float(os.environ.get("DELAY", "2"))
+          headers = {"User-Agent": "CacheWarmerBot/2.0 (+https://salomon.community)"}
 
           def fetch(url):
               try:
@@ -41,11 +35,10 @@ jobs:
                   r.raise_for_status()
                   return r.content
               except Exception as e:
-                  print("ERROR fetching", url, e)
+                  print("❌ Error fetching:", url, e)
                   return None
 
           def extract_locs(bts):
-              """Извлекает все <loc> из XML (учитывая namespace)."""
               urls = []
               try:
                   root = ET.fromstring(bts)
@@ -57,9 +50,7 @@ jobs:
               return urls
 
           def is_valid_page(url):
-              """Оставляем только HTML-страницы, исключая медиа и фиды."""
               url_lower = url.lower()
-              # Исключаем медиа-файлы и служебные URL
               if re.search(r'\.(jpg|jpeg|png|gif|webp|svg|avif|pdf|mp4|webm|xml|xsl)$', url_lower):
                   return False
               if any(x in url_lower for x in ['feed', 'wp-json', '?', '#']):
@@ -70,8 +61,9 @@ jobs:
           content = fetch(MAIN)
           if not content:
               print("Failed to fetch main sitemap.")
-              sys.exit(1)
+              raise SystemExit(1)
 
+          # находим вложенные сайтмапы
           try:
               root = ET.fromstring(content)
               nested = [el.text.strip() for el in root.findall('.//{*}sitemap/{*}loc') if el.text]
@@ -94,23 +86,19 @@ jobs:
               locs = extract_locs(content)
               all_urls.extend(locs)
 
-          # фильтрация
           filtered = [u for u in all_urls if is_valid_page(u)]
           filtered = sorted(set(filtered))
+          print(f"✅ Total pages to warm: {len(filtered)}")
 
-          print(f"✅ Total pages after filtering: {len(filtered)}")
+          warmed = 0
+          for url in filtered:
+              try:
+                  r = requests.get(url, headers=headers, timeout=15)
+                  print(f"🔥 {r.status_code} {url}")
+                  warmed += 1
+                  time.sleep(DELAY)
+              except Exception as e:
+                  print(f"⚠️ Failed {url}: {e}")
 
-          with open(OUT, "w", encoding="utf-8") as f:
-              for u in filtered:
-                  f.write(u + "\n")
-
-          print("📝 Saved to", OUT)
+          print(f"🏁 Done! Warmed {warmed}/{len(filtered)} pages.")
           PY
-
-      - name: Commit & push sitemap_full.txt
-        run: |
-          git config user.name "Sitemap Updater"
-          git config user.email "actions@github.com"
-          git add sitemap_full.txt || true
-          git commit -m "update full sitemap $(date -u +'%Y-%m-%dT%H:%M:%SZ')" || echo "No changes to commit"
-          git push
